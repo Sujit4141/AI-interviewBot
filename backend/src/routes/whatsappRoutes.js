@@ -29,6 +29,21 @@ router.get("/qr", async (req, res) => {
   }
 });
 
+router.post("/pair", async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ message: "Phone number required!" });
+
+    const sock = getSock();
+    if (!sock) return res.status(400).json({ message: "WhatsApp not started yet!" });
+
+    const code = await sock.requestPairingCode(phone);
+    res.json({ code });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to generate pairing code", error: err.message });
+  }
+});
+
 // POST /api/whatsapp/logout
 router.post("/logout", async (req, res) => {
   try {
