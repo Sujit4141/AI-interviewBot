@@ -177,12 +177,21 @@ const startWhatsApp = async (onMessageReceived) => {
       if (!msg?.message || msg.key.fromMe) return;
 
       const rawJid = msg.key.remoteJid;
+      if (!rawJid || rawJid.includes("@g.us")) return;
+
       const text =
         msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
         "";
 
-      if (!text || !rawJid || rawJid.includes("@g.us")) return;
+      // ✅ No text = message failed to decrypt (old Signal session).
+      // Baileys already sent a retry receipt. If retries also fail,
+      // the sender just needs to send a fresh message to re-establish
+      // the Signal session. Nothing we can do — skip silently.
+      if (!text) {
+        console.log(`⚠️ Empty/undecryptable message from ${rawJid} (msg id: ${msg.key.id}) — skipping`);
+        return;
+      }
 
       if (rawJid.endsWith("@lid")) {
         if (lidToPhoneMap[rawJid]) {
