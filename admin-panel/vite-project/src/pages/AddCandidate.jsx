@@ -2,7 +2,7 @@ import { useState } from "react";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import API_BASE_URL from "../config";
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 
 const AddCandidate = () => {
   const [form, setForm] = useState({ name: "", phone: "", jobRole: "" });
