@@ -9,7 +9,7 @@ const { useMongoAuthState, clearMongoAuthState } = require("./mongoAuthState");
 let sock = null;
 let currentQR = null;
 let isConnected = false;
-let isStarting = false; // ✅ Guard: prevents concurrent startWhatsApp calls
+let isStarting = false;
 
 const lidToPhoneMap = {};
 const pendingLidMessages = {};
@@ -24,20 +24,17 @@ const getSock = () => sock;
 // Disconnect reasons that should NOT trigger a reconnect
 // ─────────────────────────────────────────────────────────────
 const FATAL_DISCONNECT_REASONS = new Set([
-  DisconnectReason.loggedOut,       // 401 — user logged out
-  DisconnectReason.badSession,      // session is corrupt
+  DisconnectReason.loggedOut,
+  DisconnectReason.badSession,
   DisconnectReason.multideviceMismatch,
 ]);
 
-// Stream conflict codes that mean another device took over.
-// These require a FULL auth clear + fresh QR, not just a reconnect.
 const CONFLICT_CODES = new Set([
   "device_removed",
   "conflict",
 ]);
 
 const startWhatsApp = async (onMessageReceived) => {
-  // ✅ Prevent double-start (e.g. Render spinning up two pods briefly)
   if (isStarting) {
     console.log("⚠️ startWhatsApp already in progress, skipping duplicate call");
     return;
@@ -55,7 +52,6 @@ const startWhatsApp = async (onMessageReceived) => {
       browser: ["WhatsApp Interview Bot", "Chrome", "1.0.0"],
       generateHighQualityLinkPreview: false,
       syncFullHistory: false,
-      // ✅ Needed so Baileys can re-encrypt retried messages
       getMessage: async (key) => {
         return messageStore[key.id] || { conversation: "" };
       },
@@ -101,14 +97,13 @@ const startWhatsApp = async (onMessageReceived) => {
       if (connection === "close") {
         isConnected = false;
         currentQR = null;
-        isStarting = false; // reset guard so reconnect can proceed
+        isStarting = false;
 
         const err = lastDisconnect?.error;
         const statusCode = err?.output?.statusCode;
 
-        // ✅ Check for conflict / device_removed in the error data
         const conflictType =
-          err?.data?.content?.[0]?.attrs?.type ||   // nested XML attr
+          err?.data?.content?.[0]?.attrs?.type ||
           err?.output?.payload?.type ||
           "";
 
@@ -120,8 +115,6 @@ const startWhatsApp = async (onMessageReceived) => {
         );
 
         if (isConflict) {
-          // Another device/session took over. Clear stale auth so the
-          // next connection starts fresh and shows a new QR.
           console.log("🔴 Device conflict detected — clearing auth state for clean re-pair");
           await clearMongoAuthState();
         }
@@ -131,10 +124,7 @@ const startWhatsApp = async (onMessageReceived) => {
           setTimeout(() => startWhatsApp(onMessageReceived), 5000);
         } else {
           console.log("🛑 Fatal disconnect — waiting for manual re-pair via QR");
-          // Don't reconnect; the frontend will show QR once startWhatsApp
-          // is called again (e.g. after logout endpoint or manual restart)
           if (isConflict) {
-            // Auto-restart so a fresh QR is generated immediately
             setTimeout(() => startWhatsApp(onMessageReceived), 3000);
           }
         }
@@ -151,7 +141,11 @@ const startWhatsApp = async (onMessageReceived) => {
         setTimeout(async () => {
           try {
             const Candidate = require("../models/Candidate");
-            const candidates = await Candidate.find({ lid: { $ne: null } });
+            // ✅ FIX: also load candidates where lid is an empty string,
+            //    not just null, to catch any edge-case saves
+            const candidates = await Candidate.find({
+              lid: { $ne: null, $ne: "" },
+            });
             console.log(`🔄 Preloading lid map for ${candidates.length} candidates...`);
             for (const c of candidates) {
               lidToPhoneMap[c.lid] = `${c.phone}@s.whatsapp.net`;
@@ -184,10 +178,6 @@ const startWhatsApp = async (onMessageReceived) => {
         msg.message.extendedTextMessage?.text ||
         "";
 
-      // ✅ No text = message failed to decrypt (old Signal session).
-      // Baileys already sent a retry receipt. If retries also fail,
-      // the sender just needs to send a fresh message to re-establish
-      // the Signal session. Nothing we can do — skip silently.
       if (!text) {
         console.log(`⚠️ Empty/undecryptable message from ${rawJid} (msg id: ${msg.key.id}) — skipping`);
         return;
@@ -217,24 +207,47 @@ const startWhatsApp = async (onMessageReceived) => {
   } catch (err) {
     isStarting = false;
     console.error("❌ startWhatsApp error:", err.message);
-    // Retry after 10 seconds on unexpected startup errors
     setTimeout(() => startWhatsApp(onMessageReceived), 10000);
   }
 };
 
 // ─── Helpers ──────────────────────────────────────────────────
 
-const _handleLidResolution = (lid, phone, onMessageReceived) => {
+const _handleLidResolution = async (lid, phone, onMessageReceived) => {
+  const phoneJid = phone.includes("@s.whatsapp.net")
+    ? phone
+    : `${phone}@s.whatsapp.net`;
+
   if (!lidToPhoneMap[lid]) {
-    lidToPhoneMap[lid] = phone;
-    console.log(`🗺️ Mapped: ${lid} -> ${phone}`);
+    lidToPhoneMap[lid] = phoneJid;
+    console.log(`🗺️ Mapped: ${lid} -> ${phoneJid}`);
+
+    // ✅ FIX: Persist the LID to DB whenever we learn it from a CB:message/receipt
+    //    so that the DB fallback and preload can find it on future restarts.
+    try {
+      const Candidate = require("../models/Candidate");
+      const rawPhone = phoneJid.replace("@s.whatsapp.net", "");
+      const updated = await Candidate.findOneAndUpdate(
+        { phone: rawPhone },
+        { lid },
+        { new: true }
+      );
+      if (updated) {
+        console.log(`💾 Persisted LID to DB via CB frame: ${rawPhone} -> ${lid}`);
+      } else {
+        console.log(`⚠️ CB frame: no candidate found for phone ${rawPhone} to persist LID`);
+      }
+    } catch (e) {
+      console.error("Failed to persist LID from CB frame:", e.message);
+    }
   }
+
   if (pendingLidMessages[lid]) {
     const { texts } = pendingLidMessages[lid];
     delete pendingLidMessages[lid];
-    console.log(`📬 Flushing ${texts.length} queued message(s) for ${phone}`);
+    console.log(`📬 Flushing ${texts.length} queued message(s) for ${phoneJid}`);
     for (const text of texts) {
-      onMessageReceived(phone, text);
+      onMessageReceived(phoneJid, text);
     }
   }
 };
@@ -286,6 +299,25 @@ const sendMessage = async (to, message) => {
       const lid = result.key.remoteJid;
       lidToPhoneMap[lid] = formattedNumber;
       console.log(`🗺️ Mapped from send: ${lid} -> ${formattedNumber}`);
+
+      // ✅ FIX: Persist LID to DB so DB fallback and preload work on restart
+      try {
+        const Candidate = require("../models/Candidate");
+        const rawPhone = formattedNumber.replace("@s.whatsapp.net", "");
+        const updated = await Candidate.findOneAndUpdate(
+          { phone: rawPhone },
+          { lid },
+          { new: true }
+        );
+        if (updated) {
+          console.log(`💾 Persisted LID to DB from send: ${rawPhone} -> ${lid}`);
+        } else {
+          console.log(`⚠️ sendMessage: no candidate found for phone ${rawPhone} to persist LID`);
+        }
+      } catch (e) {
+        console.error("Failed to persist LID from send:", e.message);
+      }
+
       return lid;
     }
 
