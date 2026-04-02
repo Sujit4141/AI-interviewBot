@@ -225,9 +225,9 @@
 // };
 
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const { useMongoAuthState } = require("./mongoAuthState");
 const QRCode = require("qrcode"); // ✅ FIX
-const path = require("path");
 
 let sock = null;
 let currentQR = null;
@@ -242,9 +242,8 @@ const getConnectionStatus = () => isConnected;
 const getSock = () => sock;
 
 const startWhatsApp = async (onMessageReceived) => {
-  const { state, saveCreds } = await useMultiFileAuthState(
-    path.join(__dirname, "../../auth_info")
-  );
+  const { state, saveCreds } = await useMongoAuthState();
+  
 
   const { version } = await fetchLatestBaileysVersion();
   console.log("Using WA version:", version);
