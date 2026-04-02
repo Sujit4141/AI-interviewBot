@@ -1,9 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const mongoose = require("mongoose");
 const { getQR, getConnectionStatus, getSock } = require("../services/whatsappService");
 const { startWhatsApp } = require("../services/whatsappService");
 const { handleIncomingMessage } = require("../controllers/interviewController");
+const { clearMongoAuthState } = require("../services/mongoAuthState");
 
 // GET /api/whatsapp/status
 router.get("/status", (req, res) => {
@@ -19,37 +19,43 @@ router.get("/status", (req, res) => {
 router.get("/qr", (req, res) => {
   const qr = getQR();
   if (!qr) {
-    return res.status(200).json({ qr: null, message: "No QR available." });
+    return res.status(200).json({ qr: null, message: "No QR available yet." });
   }
-  // qr is already a base64 data URL from whatsappService
   res.json({ qr });
 });
 
 // POST /api/whatsapp/logout
+// ✅ Properly disconnects, clears ALL auth (including Signal sessions),
+//    then restarts so a fresh QR is generated.
 router.post("/logout", async (req, res) => {
   try {
     const sock = getSock();
+
+    // Gracefully disconnect first — ignore errors if already disconnected
     if (sock) {
-      try { await sock.logout(); } catch (e) {}
+      try {
+        await sock.logout();
+      } catch (_) {}
     }
 
-    // Delete session from MongoDB
-    const AuthModel = mongoose.model("AuthState");
-    await AuthModel.deleteMany({});
-    console.log("🗑️ MongoDB auth session deleted");
+    // ✅ Clear everything: creds + all Signal session keys + app state keys
+    await clearMongoAuthState();
 
-    // Restart WhatsApp
+    // Restart after a short delay so the new socket gets a clean state
     setTimeout(() => {
       startWhatsApp(handleIncomingMessage);
     }, 2000);
 
-    res.json({ message: "Logged out successfully! New QR will be generated shortly." });
+    res.json({
+      message: "Logged out successfully! New QR will appear in a moment.",
+    });
   } catch (err) {
+    console.error("Logout error:", err.message);
     res.status(500).json({ message: "Logout failed", error: err.message });
   }
 });
 
-// POST /api/whatsapp/pair
+// POST /api/whatsapp/pair  (pairing code alternative to QR)
 router.post("/pair", async (req, res) => {
   try {
     const { phone } = req.body;
