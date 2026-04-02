@@ -1,34 +1,55 @@
 const express = require("express");
 const router = express.Router();
-const fs = require("fs");
-const path = require("path");
-const QRCode = require("qrcode");
+const mongoose = require("mongoose");
 const { getQR, getConnectionStatus, getSock } = require("../services/whatsappService");
 const { startWhatsApp } = require("../services/whatsappService");
 const { handleIncomingMessage } = require("../controllers/interviewController");
 
 // GET /api/whatsapp/status
 router.get("/status", (req, res) => {
+  const connected = getConnectionStatus();
+  const qr = getQR();
   res.json({
-    connected: getConnectionStatus(),
-    hasQR: !!getQR(),
+    connected,
+    hasQR: !connected && !!qr,
   });
 });
 
 // GET /api/whatsapp/qr
-router.get("/qr", async (req, res) => {
+router.get("/qr", (req, res) => {
   const qr = getQR();
   if (!qr) {
-    return res.status(404).json({ message: "No QR available. Already connected or not started yet." });
+    return res.status(200).json({ qr: null, message: "No QR available." });
   }
+  // qr is already a base64 data URL from whatsappService
+  res.json({ qr });
+});
+
+// POST /api/whatsapp/logout
+router.post("/logout", async (req, res) => {
   try {
-    const qrImage = await QRCode.toDataURL(qr);
-    res.json({ qr: qrImage });
+    const sock = getSock();
+    if (sock) {
+      try { await sock.logout(); } catch (e) {}
+    }
+
+    // Delete session from MongoDB
+    const AuthModel = mongoose.model("AuthState");
+    await AuthModel.deleteMany({});
+    console.log("🗑️ MongoDB auth session deleted");
+
+    // Restart WhatsApp
+    setTimeout(() => {
+      startWhatsApp(handleIncomingMessage);
+    }, 2000);
+
+    res.json({ message: "Logged out successfully! New QR will be generated shortly." });
   } catch (err) {
-    res.status(500).json({ message: "Failed to generate QR", error: err.message });
+    res.status(500).json({ message: "Logout failed", error: err.message });
   }
 });
 
+// POST /api/whatsapp/pair
 router.post("/pair", async (req, res) => {
   try {
     const { phone } = req.body;
@@ -41,32 +62,6 @@ router.post("/pair", async (req, res) => {
     res.json({ code });
   } catch (err) {
     res.status(500).json({ message: "Failed to generate pairing code", error: err.message });
-  }
-});
-
-// POST /api/whatsapp/logout
-router.post("/logout", async (req, res) => {
-  try {
-    const sock = getSock();
-    if (sock) {
-      try { await sock.logout(); } catch (e) {}
-    }
-
-    // Delete auth_info folder
-    const authPath = path.join(__dirname, "../../auth_info");
-    if (fs.existsSync(authPath)) {
-      fs.rmSync(authPath, { recursive: true, force: true });
-      console.log("🗑️ auth_info deleted");
-    }
-
-    // Restart WhatsApp
-    setTimeout(() => {
-      startWhatsApp(handleIncomingMessage);
-    }, 2000);
-
-    res.json({ message: "Logged out successfully! New QR will be generated shortly." });
-  } catch (err) {
-    res.status(500).json({ message: "Logout failed", error: err.message });
   }
 });
 
