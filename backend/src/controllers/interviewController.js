@@ -199,7 +199,10 @@ const handleIncomingMessage = async (from, text) => {
     await interview.save();
 
     // Send reply without SLOT_CONFIRMED tag
-    const cleanReply = aiReply.replace(/SLOT_CONFIRMED:\s*\d+/g, "").trim();
+    const cleanReply = aiReply
+  .replace(/SLOT_CONFIRMED:\s*\d+/g, "")
+  .replace(/SLOT_CANCELLED/g, "")
+  .trim();
     await sendMessage(from, cleanReply);
 
   } catch (err) {

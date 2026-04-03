@@ -7,6 +7,7 @@ const QRCode = require("qrcode");
 const { useMongoAuthState, clearMongoAuthState } = require("./mongoAuthState");
 
 let sock = null;
+const processedMessages = new Set();
 let currentQR = null;
 let isConnected = false;
 let isStarting = false;
@@ -157,7 +158,7 @@ const startWhatsApp = async (onMessageReceived) => {
       }
     });
 
-    // ─── Incoming messages ────────────────────────────────────
+   // ─── Incoming messages ────────────────────────────────────
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       for (const msg of messages) {
         if (msg.key?.id && msg.message) {
@@ -169,6 +170,15 @@ const startWhatsApp = async (onMessageReceived) => {
 
       const msg = messages[0];
       if (!msg?.message || msg.key.fromMe) return;
+
+      // ✅ Deduplication — ADD HERE
+      const msgId = msg.key.id;
+      if (processedMessages.has(msgId)) {
+        console.log(`⚠️ Duplicate ignored: ${msgId}`);
+        return;
+      }
+      processedMessages.add(msgId);
+      setTimeout(() => processedMessages.delete(msgId), 5 * 60 * 1000);
 
       const rawJid = msg.key.remoteJid;
       if (!rawJid || rawJid.includes("@g.us")) return;
