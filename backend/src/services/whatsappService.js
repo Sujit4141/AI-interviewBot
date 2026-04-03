@@ -7,7 +7,7 @@ const QRCode = require("qrcode");
 const { useMongoAuthState, clearMongoAuthState } = require("./mongoAuthState");
 
 let sock = null;
-const processedMessages = new Set();
+const processedMessages = new Map();
 let currentQR = null;
 let isConnected = false;
 let isStarting = false;
@@ -30,14 +30,13 @@ const FATAL_DISCONNECT_REASONS = new Set([
   DisconnectReason.multideviceMismatch,
 ]);
 
-const CONFLICT_CODES = new Set([
-  "device_removed",
-  "conflict",
-]);
+const CONFLICT_CODES = new Set(["device_removed", "conflict"]);
 
 const startWhatsApp = async (onMessageReceived) => {
   if (isStarting) {
-    console.log("⚠️ startWhatsApp already in progress, skipping duplicate call");
+    console.log(
+      "⚠️ startWhatsApp already in progress, skipping duplicate call",
+    );
     return;
   }
   isStarting = true;
@@ -112,11 +111,13 @@ const startWhatsApp = async (onMessageReceived) => {
         const isFatal = FATAL_DISCONNECT_REASONS.has(statusCode) || isConflict;
 
         console.log(
-          `❌ Connection closed. Code: ${statusCode}, Conflict: ${isConflict}, Fatal: ${isFatal}`
+          `❌ Connection closed. Code: ${statusCode}, Conflict: ${isConflict}, Fatal: ${isFatal}`,
         );
 
         if (isConflict) {
-          console.log("🔴 Device conflict detected — clearing auth state for clean re-pair");
+          console.log(
+            "🔴 Device conflict detected — clearing auth state for clean re-pair",
+          );
           await clearMongoAuthState();
         }
 
@@ -124,7 +125,9 @@ const startWhatsApp = async (onMessageReceived) => {
           console.log("🔄 Reconnecting in 5 seconds...");
           setTimeout(() => startWhatsApp(onMessageReceived), 5000);
         } else {
-          console.log("🛑 Fatal disconnect — waiting for manual re-pair via QR");
+          console.log(
+            "🛑 Fatal disconnect — waiting for manual re-pair via QR",
+          );
           if (isConflict) {
             setTimeout(() => startWhatsApp(onMessageReceived), 3000);
           }
@@ -147,7 +150,9 @@ const startWhatsApp = async (onMessageReceived) => {
             const candidates = await Candidate.find({
               lid: { $ne: null, $ne: "" },
             });
-            console.log(`🔄 Preloading lid map for ${candidates.length} candidates...`);
+            console.log(
+              `🔄 Preloading lid map for ${candidates.length} candidates...`,
+            );
             for (const c of candidates) {
               lidToPhoneMap[c.lid] = `${c.phone}@s.whatsapp.net`;
             }
@@ -158,7 +163,7 @@ const startWhatsApp = async (onMessageReceived) => {
       }
     });
 
-   // ─── Incoming messages ────────────────────────────────────
+    // ─── Incoming messages ────────────────────────────────────
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       for (const msg of messages) {
         if (msg.key?.id && msg.message) {
@@ -173,25 +178,39 @@ const startWhatsApp = async (onMessageReceived) => {
 
       // ✅ Deduplication — ADD HERE
       const msgId = msg.key.id;
+      const msgTime = msg.messageTimestamp * 1000;
+      const now = Date.now();
+
+      // Ignore if already processed OR if message is older than 30 seconds
       if (processedMessages.has(msgId)) {
         console.log(`⚠️ Duplicate ignored: ${msgId}`);
         return;
       }
-      processedMessages.add(msgId);
-      setTimeout(() => processedMessages.delete(msgId), 5 * 60 * 1000);
 
-      const rawJid = msg.key.remoteJid;
-      if (!rawJid || rawJid.includes("@g.us")) return;
-
-      const text =
-        msg.message.conversation ||
-        msg.message.extendedTextMessage?.text ||
-        "";
-
-      if (!text) {
-        console.log(`⚠️ Empty/undecryptable message from ${rawJid} (msg id: ${msg.key.id}) — skipping`);
+      // Ignore messages older than 30 seconds (stale messages on reconnect)
+      if (now - msgTime > 30000) {
+        console.log(
+          `⚠️ Stale message ignored (${Math.round((now - msgTime) / 1000)}s old): ${msgId}`,
+        );
         return;
       }
+
+      processedMessages.set(msgId, now);
+setTimeout(() => processedMessages.delete(msgId), 5 * 60 * 1000);
+
+// ✅ Declare rawJid and text AFTER deduplication
+const rawJid = msg.key.remoteJid;
+if (!rawJid || rawJid.includes("@g.us")) return;
+
+const text =
+  msg.message.conversation ||
+  msg.message.extendedTextMessage?.text ||
+  "";
+
+if (!text) {
+  console.log(`⚠️ Empty message from ${rawJid} — skipping`);
+  return;
+}
 
       if (rawJid.endsWith("@lid")) {
         if (lidToPhoneMap[rawJid]) {
@@ -199,7 +218,9 @@ const startWhatsApp = async (onMessageReceived) => {
           console.log(`✅ Resolved ${rawJid} -> ${from}`);
           await onMessageReceived(from, text);
         } else {
-          console.log(`⏳ Queuing @lid message from "${msg.pushName}": ${text}`);
+          console.log(
+            `⏳ Queuing @lid message from "${msg.pushName}": ${text}`,
+          );
           if (!pendingLidMessages[rawJid]) {
             pendingLidMessages[rawJid] = { texts: [], pushName: msg.pushName };
           }
@@ -240,12 +261,16 @@ const _handleLidResolution = async (lid, phone, onMessageReceived) => {
       const updated = await Candidate.findOneAndUpdate(
         { phone: rawPhone },
         { lid },
-        { new: true }
+        { new: true },
       );
       if (updated) {
-        console.log(`💾 Persisted LID to DB via CB frame: ${rawPhone} -> ${lid}`);
+        console.log(
+          `💾 Persisted LID to DB via CB frame: ${rawPhone} -> ${lid}`,
+        );
       } else {
-        console.log(`⚠️ CB frame: no candidate found for phone ${rawPhone} to persist LID`);
+        console.log(
+          `⚠️ CB frame: no candidate found for phone ${rawPhone} to persist LID`,
+        );
       }
     } catch (e) {
       console.error("Failed to persist LID from CB frame:", e.message);
@@ -255,7 +280,9 @@ const _handleLidResolution = async (lid, phone, onMessageReceived) => {
   if (pendingLidMessages[lid]) {
     const { texts } = pendingLidMessages[lid];
     delete pendingLidMessages[lid];
-    console.log(`📬 Flushing ${texts.length} queued message(s) for ${phoneJid}`);
+    console.log(
+      `📬 Flushing ${texts.length} queued message(s) for ${phoneJid}`,
+    );
     for (const text of texts) {
       onMessageReceived(phoneJid, text);
     }
@@ -317,12 +344,16 @@ const sendMessage = async (to, message) => {
         const updated = await Candidate.findOneAndUpdate(
           { phone: rawPhone },
           { lid },
-          { new: true }
+          { new: true },
         );
         if (updated) {
-          console.log(`💾 Persisted LID to DB from send: ${rawPhone} -> ${lid}`);
+          console.log(
+            `💾 Persisted LID to DB from send: ${rawPhone} -> ${lid}`,
+          );
         } else {
-          console.log(`⚠️ sendMessage: no candidate found for phone ${rawPhone} to persist LID`);
+          console.log(
+            `⚠️ sendMessage: no candidate found for phone ${rawPhone} to persist LID`,
+          );
         }
       } catch (e) {
         console.error("Failed to persist LID from send:", e.message);

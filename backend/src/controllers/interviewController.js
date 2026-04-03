@@ -160,7 +160,8 @@ const handleIncomingMessage = async (from, text) => {
     interview.conversationHistory.push({ role: "user", message: text });
 
     // Get AI response
-    const aiReply = await getAIResponse(interview.conversationHistory, slots);
+   const turnCount = interview.conversationHistory.filter(m => m.role === "model").length;
+const aiReply = await getAIResponse(interview.conversationHistory, slots, turnCount);
 
     // Add AI response to history
     interview.conversationHistory.push({ role: "model", message: aiReply });
