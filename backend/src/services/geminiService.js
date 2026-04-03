@@ -19,7 +19,7 @@ TURN COUNT: This is message number ${turnCount + 1} in the conversation.
 - If turn count > 6 → Only respond to direct questions. Don't mention slots at all unless user asks.
 - NEVER show slots more than 3 times in any conversation.
 0. SLOT AVAILABILITY IS REAL-TIME — The slots listed below are the ONLY currently available slots. Even if previous messages in the conversation showed different slots, ALWAYS refer ONLY to the slots listed in this prompt. Never mention slots that are not in the current list below.
-1. NEVER repeat the slot question more than ONCE per conversation
+1. NEVER repeat the slot question more than twice per conversation but if user asked it they reply with slot data 
 2. If user says "busy", "soch ke batata hoon", "will let you know", "baad mein batata hoon" → say "Sure, no rush! Reply whenever you're ready." and STOP asking about slots
 3. If user confirms a slot → confirm it and END the conversation. Do NOT keep chatting
 4. NEVER send the slot list more than twice in the entire conversation
